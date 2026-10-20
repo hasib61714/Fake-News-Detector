@@ -188,6 +188,24 @@ def test_html_input_is_cleaned_by_the_saved_preprocessing(
         assert post(client, wrapped)["label"] == "fake"
 
 
+def test_publisher_boilerplate_is_removed_by_the_saved_preprocessing(
+    make_client: Callable[..., TestClient], write_model: Callable[[], None]
+) -> None:
+    """The served model applies the same cleaning it was trained with: a dateline, an image credit
+    and a tweet embed around an article change nothing about the prediction."""
+    write_model()
+    noisy = (
+        f"WASHINGTON (Reuters) - {FAKE_TEXT} pic.twitter.com/3vD5nFgE36 "
+        "Featured image via Mark Wilson/Getty Images"
+    )
+    with make_client() as client:
+        clean_body = post(client, FAKE_TEXT)
+        noisy_body = post(client, noisy)
+
+    assert noisy_body["probabilities"] == clean_body["probabilities"]
+    assert noisy_body["label"] == clean_body["label"]
+
+
 # -- invalid input --------------------------------------------------------------
 
 

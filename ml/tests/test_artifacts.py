@@ -17,6 +17,7 @@ from fakenews_ml.artifacts import (
     write_release,
 )
 from fakenews_ml.data import Dataset
+from fakenews_ml.preprocessing import PREPROCESSING_VERSION
 from fakenews_ml.report import format_report
 from fakenews_ml.report import main as report_main
 from fakenews_ml.train import TrainingConfig, train
@@ -55,7 +56,7 @@ def test_load_returns_pipeline_and_metadata_together(active: Path) -> None:
     assert loaded.name in {"tfidf-logistic-regression", "tfidf-linear-svm-calibrated"}
     assert loaded.version == loaded.metadata["model_version"]
     assert loaded.pipeline.steps[0][0] == "clean"  # preprocessing travels inside the artifact
-    assert loaded.metadata["preprocessing"]["version"] == "1"
+    assert loaded.metadata["preprocessing"]["version"] == PREPROCESSING_VERSION == "2"
 
 
 def test_missing_model_is_reported_as_not_found(tmp_path: Path) -> None:
@@ -78,8 +79,10 @@ def test_model_file_that_does_not_match_its_recorded_hash_is_rejected(active: Pa
         load_artifact(active / "model.joblib")
 
 
-def test_preprocessing_version_mismatch_is_rejected(active: Path) -> None:
-    rewrite_metadata(active, lambda m: m["preprocessing"].update(version="0-old"))
+@pytest.mark.parametrize("stale", ["1", "0-old", "3"])
+def test_preprocessing_version_mismatch_is_rejected(active: Path, stale: str) -> None:
+    """An artifact trained with preprocessing v1 (or any other version) is refused, not served."""
+    rewrite_metadata(active, lambda m: m["preprocessing"].update(version=stale))
     with pytest.raises(ArtifactError, match="preprocessing version"):
         load_artifact(active / "model.joblib")
 
