@@ -1,0 +1,3 @@
+from fakenews_ml.train import main
+
+raise SystemExit(main())
