@@ -1,125 +1,175 @@
-"""Train the classifier and write the artifact the API loads.
+"""Train, compare, calibrate the uncertainty rule, evaluate once, and write the artifact.
 
-Outputs (in --output-dir, default ml/artifacts/):
-    model.joblib            the fitted sklearn Pipeline (labels: "fake", "real")
-    model.metadata.json     name, version, trained_at, metrics, dataset summary
+Stages (the order is the point; see ml/README.md):
+
+1. Stratified split into train / validation / test (seeded).
+2. Cross-validate Logistic Regression and Linear SVM on TRAIN only; pick the best macro-F1.
+3. Fit the chosen pipeline on TRAIN.
+4. Derive the 'uncertain' confidence threshold on VALIDATION.
+5. Evaluate on TEST exactly once. Nothing is tuned afterwards.
+6. Write a versioned artifact with all of the above recorded in its metadata.
 """
 
 import argparse
-import json
-import os
 import sys
-from collections.abc import Sequence
-from datetime import datetime, timezone
+from collections.abc import Callable, Sequence
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import joblib
-import sklearn
-from sklearn.metrics import classification_report
-from sklearn.model_selection import train_test_split
+from fakenews_ml.artifacts import Artifact, build_artifact, write_release
+from fakenews_ml.data import Dataset, DatasetError
+from fakenews_ml.evaluation import evaluate, predict_top
+from fakenews_ml.models import DISPLAY_NAMES, build_pipeline
+from fakenews_ml.report import DEFAULT_ARTIFACT_DIR, format_report
+from fakenews_ml.selection import SELECTION_METRIC, compare_candidates, select_best
+from fakenews_ml.splits import split_indices, take
+from fakenews_ml.uncertainty import UncertaintyRule, derive_rule
+from fakenews_ml.validate import add_dataset_arguments, load_from_args
 
-from fakenews_ml.data import Dataset, DatasetError, load_class_csvs, load_labeled_csv
-from fakenews_ml.pipeline import MODEL_NAME, build_pipeline
 
-DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts"
+@dataclass(frozen=True)
+class TrainingConfig:
+    seed: int = 42
+    test_size: float = 0.2
+    validation_size: float = 0.2
+    cv_folds: int = 5
+    min_df: int = 2
+    max_features: int = 100_000
+    target_accuracy: float = 0.95
+    min_coverage: float = 0.5
+    min_threshold: float = 0.6
+    n_jobs: int = 1
 
 
-def train_and_save(
-    dataset: Dataset,
-    output_dir: Path,
-    test_size: float = 0.2,
-    seed: int = 42,
-    min_df: int = 2,
+def _evaluate_split(
+    name: str, pipeline: Any, texts: Sequence[str], labels: Sequence[str], threshold: float
 ) -> dict[str, Any]:
-    """Fit on a stratified split, evaluate on the held-out part, write artifacts."""
-    x_train, x_test, y_train, y_test = train_test_split(
-        dataset.texts,
-        dataset.labels,
-        test_size=test_size,
-        random_state=seed,
-        stratify=dataset.labels,
+    """Score one split. Called once for 'validation' and once, last, for 'test'."""
+    predicted, confidence = predict_top(pipeline, texts)
+    return evaluate(labels, predicted, list(confidence), threshold)
+
+
+def train(
+    dataset: Dataset,
+    config: TrainingConfig | None = None,
+    *,
+    log: Callable[[str], None] = lambda _: None,
+) -> Artifact:
+    """Run the full procedure and return the serialized artifact (not yet written to disk)."""
+    config = config or TrainingConfig()
+    splits = split_indices(dataset.labels, config.test_size, config.validation_size, config.seed)
+    x_train, y_train = take(dataset.texts, splits.train), take(dataset.labels, splits.train)
+    x_val, y_val = take(dataset.texts, splits.validation), take(dataset.labels, splits.validation)
+    x_test, y_test = take(dataset.texts, splits.test), take(dataset.labels, splits.test)
+    log(f"Split: train {len(x_train):,} / validation {len(x_val):,} / test {len(x_test):,}")
+
+    log(f"Cross-validating candidates on the training split ({config.cv_folds}-fold)...")
+    candidates = compare_candidates(
+        x_train,
+        y_train,
+        cv_folds=config.cv_folds,
+        seed=config.seed,
+        min_df=config.min_df,
+        max_features=config.max_features,
+        n_jobs=config.n_jobs,
     )
-    pipeline = build_pipeline(min_df=min_df, seed=seed)
+    selected = select_best(candidates)
+    log(f"Selected {selected.name} ({SELECTION_METRIC} {selected.score:.4f})")
+
+    pipeline = build_pipeline(
+        selected.kind, seed=config.seed, min_df=config.min_df, max_features=config.max_features
+    )
     pipeline.fit(x_train, y_train)
 
-    report = classification_report(
-        y_test, pipeline.predict(x_test), output_dict=True, zero_division=0
+    predicted, confidence = predict_top(pipeline, x_val)
+    rule: UncertaintyRule = derive_rule(
+        list(confidence),
+        [p == t for p, t in zip(predicted, y_val, strict=True)],
+        target_accuracy=config.target_accuracy,
+        min_coverage=config.min_coverage,
+        min_threshold=config.min_threshold,
+    )
+    validation_eval = _evaluate_split("validation", pipeline, x_val, y_val, rule.threshold)
+
+    log("Evaluating on the held-out test split (once)...")
+    test_eval = _evaluate_split("test", pipeline, x_test, y_test, rule.threshold)
+
+    return build_artifact(
+        pipeline,
+        {
+            "model_name": DISPLAY_NAMES[selected.kind],
+            "seed": config.seed,
+            "config": asdict(config),
+            "dataset": {
+                "report": dataset.report.to_dict(),
+                "splits": {
+                    "train": len(x_train),
+                    "validation": len(x_val),
+                    "test": len(x_test),
+                    "stratified": True,
+                },
+            },
+            "model_selection": {
+                "metric": SELECTION_METRIC,
+                "data": "training split only",
+                "cv_folds": config.cv_folds,
+                "candidates": [c.to_dict() for c in candidates],
+                "selected": selected.kind,
+                "final_fit": "training split only (validation and test excluded)",
+            },
+            "uncertainty": rule.to_dict(),
+            "evaluation": {"validation": validation_eval, "test": test_eval},
+        },
     )
 
-    trained_at = datetime.now(timezone.utc)
-    metadata: dict[str, Any] = {
-        "schema_version": 1,
-        "model_name": MODEL_NAME,
-        "model_version": trained_at.strftime("%Y%m%d%H%M%S"),
-        "trained_at": trained_at.isoformat(timespec="seconds"),
-        "labels": sorted(set(dataset.labels)),
-        "sklearn_version": sklearn.__version__,
-        "seed": seed,
-        "dataset": {
-            "train_samples": len(x_train),
-            "test_samples": len(x_test),
-            "dropped_empty": dataset.dropped_empty,
-            "dropped_duplicates": dataset.dropped_duplicates,
-        },
-        "metrics": {
-            "accuracy": report["accuracy"],
-            "per_class": {k: report[k] for k in ("fake", "real")},
-        },
-    }
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    model_path = output_dir / "model.joblib"
-    metadata_path = output_dir / "model.metadata.json"
-    # Write via temp files and publish the model last: the API watches for model.joblib.
-    metadata_tmp = metadata_path.with_suffix(".json.tmp")
-    metadata_tmp.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    os.replace(metadata_tmp, metadata_path)
-    model_tmp = model_path.with_suffix(".joblib.tmp")
-    joblib.dump(pipeline, model_tmp)
-    os.replace(model_tmp, model_path)
-    return metadata
-
-
-def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None) -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawTextHelpFormatter
     )
-    source = parser.add_argument_group("dataset (choose one form)")
-    source.add_argument("--data", type=Path, help="CSV with 'text' and 'label' (fake|real) columns")
-    source.add_argument("--fake-csv", type=Path, help="CSV of fake articles (e.g. Fake.csv)")
-    source.add_argument("--real-csv", type=Path, help="CSV of real articles (e.g. True.csv)")
-    parser.add_argument("--text-column", default="text")
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--test-size", type=float, default=0.2)
-    parser.add_argument("--min-df", type=int, default=2, help="TF-IDF minimum document frequency")
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args(argv)
-    if bool(args.data) == bool(args.fake_csv or args.real_csv):
-        parser.error("provide either --data, or both --fake-csv and --real-csv")
-    if not args.data and not (args.fake_csv and args.real_csv):
-        parser.error("--fake-csv and --real-csv must be used together")
-    return args
+    add_dataset_arguments(parser)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_ARTIFACT_DIR)
+    parser.add_argument("--no-activate", action="store_true", help="write the release only")
+    defaults = TrainingConfig()
+    for field, kind in (
+        ("seed", int),
+        ("test_size", float),
+        ("validation_size", float),
+        ("cv_folds", int),
+        ("min_df", int),
+        ("max_features", int),
+        ("target_accuracy", float),
+        ("min_coverage", float),
+        ("min_threshold", float),
+        ("n_jobs", int),
+    ):
+        parser.add_argument(
+            f"--{field.replace('_', '-')}", type=kind, default=getattr(defaults, field)
+        )
+    return parser, parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parse_args(argv)
+    parser, args = _parse_args(argv)
     try:
-        if args.data:
-            dataset = load_labeled_csv(args.data, text_column=args.text_column)
-        else:
-            dataset = load_class_csvs(args.fake_csv, args.real_csv, text_column=args.text_column)
-    except DatasetError as exc:
+        dataset = load_from_args(parser, args)
+        print(dataset.report.format())
+        config = TrainingConfig(
+            **{k: getattr(args, k) for k in TrainingConfig.__dataclass_fields__}
+        )
+        artifact = train(dataset, config, log=print)
+    except (DatasetError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    metadata = train_and_save(
-        dataset, args.output_dir, test_size=args.test_size, seed=args.seed, min_df=args.min_df
-    )
-    print(f"Trained {metadata['model_name']} v{metadata['model_version']}")
-    print(f"  samples: {metadata['dataset']}")
-    print(f"  held-out accuracy: {metadata['metrics']['accuracy']:.4f}")
-    print(f"  artifacts written to: {args.output_dir}")
+    release = write_release(artifact, args.output_dir, activate=not args.no_activate)
+    print()
+    print(format_report(artifact.metadata))
+    print()
+    print(f"Release written to {release}")
+    if not args.no_activate:
+        print(f"Active model updated in {args.output_dir}")
     return 0
 
 
