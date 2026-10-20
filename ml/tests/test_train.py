@@ -57,32 +57,28 @@ def test_written_artifact_loads_and_predicts_with_the_learned_signal(
     assert loaded.threshold == artifact.metadata["uncertainty"]["threshold"]
 
 
-def test_same_seed_reproduces_selection_threshold_and_test_metrics(dataset: Dataset) -> None:
-    a = train(dataset, FAST).metadata
-    b = train(dataset, FAST).metadata
-
-    assert a["model_selection"]["selected"] == b["model_selection"]["selected"]
-    assert a["uncertainty"] == b["uncertainty"]
-    assert a["evaluation"] == b["evaluation"]
-    assert [c["metrics"] for c in a["model_selection"]["candidates"]] == [
-        c["metrics"] for c in b["model_selection"]["candidates"]
-    ]
+# Fields that legitimately differ between two otherwise identical training runs.
+VOLATILE_KEYS = {"total_seconds", "trained_at", "model_version"}
 
 
-def test_a_different_seed_changes_the_split(dataset: Dataset) -> None:
-    a = train(dataset, FAST).metadata
-    b = train(dataset, TrainingConfig(cv_folds=3, min_df=1, seed=12)).metadata
-    assert a["seed"] != b["seed"]
-    assert a["evaluation"]["test"] != b["evaluation"]["test"] or (
-        a["model_selection"]["candidates"] != b["model_selection"]["candidates"]
-    )
+def without_volatile(value: Any) -> Any:
+    """Deep copy of a metadata structure without wall-clock timings and timestamps."""
+    if isinstance(value, dict):
+        return {k: without_volatile(v) for k, v in value.items() if k not in VOLATILE_KEYS}
+    if isinstance(value, list):
+        return [without_volatile(v) for v in value]
+    return value
 
 
-def test_final_test_set_is_isolated_from_selection_and_threshold_derivation(
-    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Spy on each stage: selection sees only train rows, the rule only validation, and the
-    test split is scored exactly once, last."""
+def record_stages(
+    monkeypatch: pytest.MonkeyPatch, dataset: Dataset, config: TrainingConfig
+) -> list[tuple[str, Any]]:
+    """Run ``train`` while recording what each stage receives, in call order.
+
+    Events: ``("compare", train_texts)``, ``("derive", n_validation)``,
+    ``("evaluate:validation", texts)`` and ``("evaluate:test", texts)``. Patches are undone
+    when the helper returns, so it can be called repeatedly in one test.
+    """
     events: list[tuple[str, Any]] = []
     real_compare = selection.compare_candidates
     real_derive = uncertainty.derive_rule
@@ -100,11 +96,66 @@ def test_final_test_set_is_isolated_from_selection_and_threshold_derivation(
         events.append(("evaluate:" + name, set(texts)))
         return real_eval(name, pipeline, texts, labels, threshold)
 
-    monkeypatch.setattr(train_module, "compare_candidates", compare)
-    monkeypatch.setattr(train_module, "derive_rule", derive)
-    monkeypatch.setattr(train_module, "_evaluate_split", evaluate_split)
+    with monkeypatch.context() as patch:
+        patch.setattr(train_module, "compare_candidates", compare)
+        patch.setattr(train_module, "derive_rule", derive)
+        patch.setattr(train_module, "_evaluate_split", evaluate_split)
+        train(dataset, config)
+    return events
 
-    train(dataset, FAST)
+
+def test_same_seed_reproduces_the_whole_run(dataset: Dataset) -> None:
+    """Everything except wall-clock timings and timestamps must be identical, including the
+    SHA-256 of the serialized model (which depends on every fitted coefficient)."""
+    a = train(dataset, FAST)
+    b = train(dataset, FAST)
+
+    assert a.metadata["artifact"]["sha256"] == b.metadata["artifact"]["sha256"]
+    assert a.model_bytes == b.model_bytes
+    assert without_volatile(a.metadata) == without_volatile(b.metadata)
+
+
+def test_timings_are_the_only_run_to_run_difference_in_model_selection(dataset: Dataset) -> None:
+    """Regression guard: comparisons of candidate records must never depend on elapsed time."""
+    candidates = train(dataset, FAST).metadata["model_selection"]["candidates"]
+    assert all(c["total_seconds"] >= 0 for c in candidates)
+    assert all("total_seconds" not in without_volatile(c) for c in candidates)
+
+
+def test_a_different_seed_changes_the_split(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compare the actual samples each stage receives under seed 11 and seed 12.
+
+    Deterministic: depends only on the seeded permutation, not on metric values, model
+    quality, elapsed time or how separable the fixture data is.
+    """
+    seeds = (11, 12)
+    runs = {
+        seed: dict(
+            record_stages(monkeypatch, dataset, TrainingConfig(cv_folds=3, min_df=1, seed=seed))
+        )
+        for seed in seeds
+    }
+    stages = {"train": "compare", "validation": "evaluate:validation", "test": "evaluate:test"}
+
+    for split, stage in stages.items():
+        assert runs[11][stage] != runs[12][stage], f"{split} split is identical for seeds 11 and 12"
+
+    everything = set(dataset.texts)
+    for seed in seeds:
+        parts = [runs[seed][stage] for stage in stages.values()]
+        assert (len(parts[0]), len(parts[1]), len(parts[2])) == (96, 32, 32)
+        assert set().union(*parts) == everything  # a partition: nothing lost...
+        assert sum(len(part) for part in parts) == len(everything)  # ...and nothing duplicated
+
+
+def test_final_test_set_is_isolated_from_selection_and_threshold_derivation(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spy on each stage: selection sees only train rows, the rule only validation, and the
+    test split is scored exactly once, last."""
+    events = record_stages(monkeypatch, dataset, FAST)
 
     assert [name for name, _ in events] == [
         "compare",
@@ -150,7 +201,13 @@ def test_test_labels_never_influence_the_trained_model(
         == tampered.metadata["evaluation"]["validation"]
     )
     assert baseline.metadata["artifact"]["sha256"] == tampered.metadata["artifact"]["sha256"]
-    assert baseline.metadata["evaluation"]["test"] != tampered.metadata["evaluation"]["test"]
+    # Only the test labels changed. Flipping every test label flips every correctness verdict, so
+    # accuracy must be exactly complementary whatever the model's quality: this cannot pass by
+    # luck, and it fails if the test score were computed from the original labels.
+    base_test = baseline.metadata["evaluation"]["test"]["all_predictions"]
+    flipped_test = tampered.metadata["evaluation"]["test"]["all_predictions"]
+    assert flipped_test["n"] == base_test["n"]
+    assert flipped_test["accuracy"] == pytest.approx(1.0 - base_test["accuracy"])
 
 
 def test_invalid_config_is_rejected(dataset: Dataset) -> None:
