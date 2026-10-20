@@ -248,6 +248,47 @@ Recommended after training (not done yet): inspect the largest-weight features o
 publisher words, and evaluate on a differently sourced dataset before drawing any conclusion about
 real-world performance.
 
+## Leakage experiments
+
+The baseline's largest weights are mostly writing-style and attribution cues (`said`, weekdays,
+`reuters`, contractions). Two tools measure how much that matters. Both are experiments: neither is
+part of the served pipeline, and neither writes outside the git-ignored `ml/artifacts/` tree.
+
+**Style-masking ablation** (`fakenews_ml/stylemask.py`, `fakenews_ml/ablation.py`). Retrains with
+those tokens deleted, using the same data, split and seed, and compares with the baseline on the
+same test rows (per-class precision/recall, confusion matrices, exact McNemar test, paired bootstrap).
+
+```bash
+.venv/bin/python -m fakenews_ml.ablation --level core        # or: extended, both
+```
+
+* The rules and the way results are read are fixed in
+  [`experiments/style-mask-v1/PROTOCOL.md`](experiments/style-mask-v1/PROTOCOL.md) before any run;
+  the runner records the protocol's SHA-256 in its results, refuses to run without it, and refuses to
+  re-run a level that already has results.
+* It aborts unless the dataset fingerprint matches the baseline and re-scoring the baseline on the
+  rebuilt test split reproduces its saved confusion matrix. The baseline is never modified (its
+  hashes are checked before and after). Ablation models are stored separately with a preprocessing
+  version the API loader refuses, so they cannot be served by accident.
+* The recorded run, with the verbatim output, is in
+  [`experiments/style-mask-v1/RESULTS.md`](experiments/style-mask-v1/RESULTS.md). Short version:
+  on this dataset, deleting the four named categories lowered macro-F1 by 0.45 points and the
+  stricter extended mask by 1.03 points; the classes stay separable through naming conventions,
+  topic and vocabulary. That is evidence about this dataset only, not about real-world performance.
+
+**Contamination check** (`fakenews_ml/crosscheck.py`). Run this before evaluating on any other
+dataset. It scores no model; it reports empty and duplicate articles, exact overlap with the
+training data (after the pipeline's own cleaning), near-duplicates (TF-IDF cosine at or above
+0.90) and shared publishers when a domain column is given.
+
+```bash
+.venv/bin/python -m fakenews_ml.crosscheck --external path/to/other.csv --text-column text \
+    --domain-column domain
+```
+
+An external dataset needs its license and intended use checked first (as for ISOT, see
+`data/PROVENANCE.md`) and substantial overlap means it cannot support a claim of external validity.
+
 ## Honest caveats
 
 * Test-set metrics describe **the same dataset distribution** you trained on. They are not evidence

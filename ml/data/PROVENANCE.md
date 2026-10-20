@@ -23,17 +23,25 @@ trained models derived from them.
 
 **CC BY-NC-SA 4.0** (Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International).
 
-* Status: **stated by the project owner as shown on the Kaggle dataset page on 2026-10-20.** It
-  has **not** been independently verified by the tooling used to prepare this repository (the
-  Kaggle and Creative Commons sites were not reachable from the development environment, and the
-  downloaded archives contain no license file).
+* Status: **checked by the project owner (Md. Hasibul Hasan) on the Kaggle dataset page for the
+  version they downloaded, and reported on 2026-10-20: the displayed license is CC BY-NC-SA 4.0.**
+  This is the owner's own check. It was **not** independently verified by the tooling used to
+  prepare this repository (the Kaggle and Creative Commons sites were not reachable from the
+  development environment, and the downloaded archives contain no license file).
+* Dataset version number: **not reported.** The owner confirmed the license for "the exact version
+  downloaded" but did not state a version number; it is deliberately left unrecorded rather than
+  guessed. The SHA-256 hashes in "Exact files used" below identify the exact bytes used.
+* Declared intended use (owner statement, 2026-10-20): **non-commercial academic research and a
+  non-commercial portfolio demonstration only.** The dataset and any model trained on it will not
+  be used in a paid product, a commercial service or a monetized demo, and the trained model will
+  not be distributed.
 * Deed: <https://creativecommons.org/licenses/by-nc-sa/4.0/>
   Legal code: <https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode>
   (linked here; not fetched or quoted by the tooling).
 
-### Verifying the license for the exact downloaded version
+### Verifying the license for the exact downloaded version (done by the owner on 2026-10-20)
 
-Do this once, on your own computer, and fill in the blanks below:
+Checklist used (kept so the check can be repeated):
 
 1. Open the dataset page above while signed in, and note the **License** field and the dataset
    **Version** shown on the page.
@@ -43,8 +51,9 @@ Do this once, on your own computer, and fill in the blanks below:
    `Get-FileHash ml\data\Fake.csv, ml\data\True.csv -Algorithm SHA256`.
 4. Record the result:
 
-   * License field on the page: `CC BY-NC-SA 4.0` (confirm) &nbsp; Verified on: `____-__-__`
-   * Dataset version shown: `__` &nbsp; Verified by: `__________`
+   * License field on the page: `CC BY-NC-SA 4.0` &nbsp; Verified on: `2026-10-20`
+   * Dataset version shown: `not reported (fill in if you want it recorded)` &nbsp; Verified by:
+     `Md. Hasibul Hasan (project owner)`
 
 ### What the conditions mean here
 
