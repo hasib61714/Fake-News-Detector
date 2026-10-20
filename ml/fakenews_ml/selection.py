@@ -8,6 +8,7 @@ from typing import Any
 from sklearn.model_selection import StratifiedKFold, cross_validate
 
 from fakenews_ml.models import CANDIDATES, DISPLAY_NAMES, CandidateKind, build_pipeline
+from fakenews_ml.stylemask import StyleMaskLevel
 
 SELECTION_METRIC = "f1_macro"
 _SCORING = ["accuracy", "precision_macro", "recall_macro", "f1_macro"]
@@ -44,6 +45,7 @@ def compare_candidates(
     min_df: int = 2,
     max_features: int = 100_000,
     n_jobs: int = 1,
+    style_mask: StyleMaskLevel | None = None,
 ) -> list[CandidateResult]:
     """Cross-validate every candidate on the same folds. Pass training data only."""
     if cv_folds < 2:
@@ -53,7 +55,13 @@ def compare_candidates(
     for kind in CANDIDATES:
         started = time.perf_counter()
         scores = cross_validate(
-            build_pipeline(kind, seed=seed, min_df=min_df, max_features=max_features),
+            build_pipeline(
+                kind,
+                seed=seed,
+                min_df=min_df,
+                max_features=max_features,
+                style_mask=style_mask,
+            ),
             list(texts),
             list(labels),
             cv=folds,

@@ -24,6 +24,7 @@ from fakenews_ml.models import DISPLAY_NAMES, build_pipeline
 from fakenews_ml.report import DEFAULT_ARTIFACT_DIR, format_report
 from fakenews_ml.selection import SELECTION_METRIC, compare_candidates, select_best
 from fakenews_ml.splits import split_indices, take
+from fakenews_ml.stylemask import StyleMaskLevel
 from fakenews_ml.uncertainty import UncertaintyRule, derive_rule
 from fakenews_ml.validate import add_dataset_arguments, load_from_args
 
@@ -40,6 +41,7 @@ class TrainingConfig:
     min_coverage: float = 0.5
     min_threshold: float = 0.6
     n_jobs: int = 1
+    style_mask: StyleMaskLevel | None = None  # ablation experiment only; None = baseline
 
 
 def _evaluate_split(
@@ -73,12 +75,17 @@ def train(
         min_df=config.min_df,
         max_features=config.max_features,
         n_jobs=config.n_jobs,
+        style_mask=config.style_mask,
     )
     selected = select_best(candidates)
     log(f"Selected {selected.name} ({SELECTION_METRIC} {selected.score:.4f})")
 
     pipeline = build_pipeline(
-        selected.kind, seed=config.seed, min_df=config.min_df, max_features=config.max_features
+        selected.kind,
+        seed=config.seed,
+        min_df=config.min_df,
+        max_features=config.max_features,
+        style_mask=config.style_mask,
     )
     pipeline.fit(x_train, y_train)
 
@@ -155,8 +162,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         dataset = load_from_args(parser, args)
         print(dataset.report.format())
+        # `style_mask` is an ablation-only option and is deliberately not exposed on this CLI.
         config = TrainingConfig(
-            **{k: getattr(args, k) for k in TrainingConfig.__dataclass_fields__}
+            **{
+                k: getattr(args, k)
+                for k in TrainingConfig.__dataclass_fields__
+                if k != "style_mask"
+            }
         )
         artifact = train(dataset, config, log=print)
     except (DatasetError, ValueError) as exc:

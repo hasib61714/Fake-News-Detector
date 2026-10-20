@@ -15,6 +15,7 @@ from sklearn.preprocessing import FunctionTransformer
 from sklearn.svm import LinearSVC
 
 from fakenews_ml.preprocessing import clean_texts
+from fakenews_ml.stylemask import StyleMaskLevel, mask_function
 
 CandidateKind = Literal["logistic_regression", "linear_svm"]
 # Order matters: on an exact tie in the selection metric the earlier (simpler) one wins.
@@ -27,7 +28,12 @@ DISPLAY_NAMES: dict[CandidateKind, str] = {
 
 
 def build_pipeline(
-    kind: CandidateKind, *, seed: int = 42, min_df: int = 2, max_features: int = 100_000
+    kind: CandidateKind,
+    *,
+    seed: int = 42,
+    min_df: int = 2,
+    max_features: int = 100_000,
+    style_mask: StyleMaskLevel | None = None,
 ) -> Pipeline:
     classifier: LogisticRegression | CalibratedClassifierCV
     if kind == "logistic_regression":
@@ -40,9 +46,13 @@ def build_pipeline(
     else:
         raise ValueError(f"Unknown candidate {kind!r}")
 
+    steps: list[tuple[str, object]] = [("clean", FunctionTransformer(clean_texts, validate=False))]
+    if style_mask is not None:
+        # Ablation experiment only (see stylemask.py). Never set for the served baseline model.
+        steps.append(("style_mask", FunctionTransformer(mask_function(style_mask), validate=False)))
     return Pipeline(
         [
-            ("clean", FunctionTransformer(clean_texts, validate=False)),
+            *steps,
             (
                 "tfidf",
                 TfidfVectorizer(
