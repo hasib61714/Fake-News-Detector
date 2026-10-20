@@ -1,27 +1,65 @@
+"""Test fixtures.
+
+The API tests exercise the REAL artifact path: a model is trained with ``fakenews_ml`` on a
+tiny, in-code corpus (templated nonsense with disjoint class vocabularies; it is NOT a dataset
+and says nothing about real news), written with ``write_release`` and loaded by the service.
+"""
+
+import csv
+import random
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-import joblib
 import pytest
+from fakenews_ml.artifacts import write_release
+from fakenews_ml.data import load_data_dir
+from fakenews_ml.train import TrainingConfig, train
 from fastapi.testclient import TestClient
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
 
 from app.config import Settings
 from app.main import create_app
 
-# Test-only toy corpus with disjoint vocabularies per class. It is used to fit a tiny real
-# scikit-learn pipeline so the tests exercise genuine load/predict code paths.
-FAKE_TEXT = "shocking miracle secret hoax conspiracy exposed unbelievable banned cure " * 2
-REAL_TEXT = "ministry committee quarterly budget report parliament council statistics policy " * 2
+FAKE_WORDS = [
+    "shocking", "miracle", "secret", "hoax", "conspiracy",
+    "exposed", "unbelievable", "banned", "cure", "elites",
+]  # fmt: skip
+REAL_WORDS = [
+    "ministry", "committee", "quarterly", "budget", "report",
+    "parliament", "council", "statistics", "policy", "officials",
+]  # fmt: skip
+COMMON = ["the", "a", "of", "and", "in", "to", "is", "on", "for", "with", "this", "that", "today"]
+
+FAKE_TEXT = " ".join(FAKE_WORDS * 2) + " said today"
+REAL_TEXT = " ".join(REAL_WORDS * 2) + " said today"
+# Equal parts fake and real vocabulary: the model should be unable to choose confidently.
+AMBIGUOUS_TEXT = " ".join(FAKE_WORDS[:5] + REAL_WORDS[:5] + FAKE_WORDS[:5] + REAL_WORDS[:5])
 
 
-def fit_toy_pipeline(labels: tuple[str, str] = ("fake", "real")) -> Pipeline:
-    texts = [FAKE_TEXT, FAKE_TEXT + " extra", REAL_TEXT, REAL_TEXT + " extra"] * 3
-    targets = [labels[0], labels[0], labels[1], labels[1]] * 3
-    pipeline = Pipeline([("tfidf", TfidfVectorizer()), ("clf", LogisticRegression())])
-    return pipeline.fit(texts, targets)
+def _article(label: str, i: int, rng: random.Random) -> str:
+    vocab = FAKE_WORDS if label == "fake" else REAL_WORDS
+    words = rng.choices(vocab, k=12) + rng.choices(COMMON, k=14) + [f"item{label}{i}"]
+    rng.shuffle(words)
+    return " ".join(words)
+
+
+@pytest.fixture(scope="session")
+def trained_output(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Train once per test session; tests copy the resulting files."""
+    root = tmp_path_factory.mktemp("trained")
+    data = root / "data"
+    data.mkdir()
+    rng = random.Random(5)
+    for name, label in (("Fake.csv", "fake"), ("True.csv", "real")):
+        with (data / name).open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["text"])
+            writer.writerows([[_article(label, i, rng)] for i in range(80)])
+
+    artifact = train(load_data_dir(data), TrainingConfig(cv_folds=3, min_df=1, seed=5))
+    out = root / "artifacts"
+    write_release(artifact, out)
+    return out
 
 
 @pytest.fixture
@@ -30,13 +68,13 @@ def model_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def write_model(model_path: Path) -> Callable[[], None]:
+def write_model(model_path: Path, trained_output: Path) -> Callable[[], None]:
     def _write() -> None:
-        joblib.dump(fit_toy_pipeline(), model_path)
-        model_path.with_name("model.metadata.json").write_text(
-            '{"model_name": "toy-test-model", "model_version": "t1", '
-            '"trained_at": "2026-01-01T00:00:00+00:00"}'
+        # Metadata first, model last: the same order training uses when it activates a model.
+        shutil.copyfile(
+            trained_output / "model.metadata.json", model_path.with_name("model.metadata.json")
         )
+        shutil.copyfile(trained_output / "model.joblib", model_path)
 
     return _write
 

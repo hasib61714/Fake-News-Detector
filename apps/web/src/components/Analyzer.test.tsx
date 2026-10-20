@@ -26,8 +26,10 @@ function health(overrides: Record<string, unknown> = {}) {
 const analysis = (overrides: Record<string, unknown> = {}) => ({
   mode: "model",
   label: "fake",
+  top_label: "fake",
   confidence: 0.87,
   probabilities: { fake: 0.87, real: 0.13 },
+  uncertainty_threshold: 0.7,
   model: { name: "tfidf-logistic-regression", version: "20260101000000", trained_at: null },
   analyzed_chars: ARTICLE.length,
   disclaimer: "Statistical classifier, not a fact-check.",
@@ -108,6 +110,36 @@ describe("<Analyzer />", () => {
     expect(screen.queryByText("Likely real")).not.toBeInTheDocument();
   });
 
+  it("shows 'Uncertain' instead of a verdict when confidence is below the threshold", async () => {
+    stubApi({
+      analyze: () =>
+        json(
+          analysis({
+            label: "uncertain",
+            top_label: "real",
+            confidence: 0.58,
+            probabilities: { fake: 0.42, real: 0.58 },
+            uncertainty_threshold: 0.7,
+          }),
+        ),
+    });
+    const user = userEvent.setup();
+    render(<Analyzer />);
+
+    await user.click(screen.getByLabelText("Article text"));
+    await user.paste(ARTICLE);
+    await user.click(screen.getByRole("button", { name: "Analyze" }));
+
+    expect(await screen.findByText("Uncertain")).toBeInTheDocument();
+    expect(screen.queryByText("Likely fake")).not.toBeInTheDocument();
+    expect(screen.queryByText("Likely real")).not.toBeInTheDocument();
+    const note = screen.getByRole("note");
+    expect(note).toHaveTextContent("not confident enough");
+    expect(note).toHaveTextContent("58.0%");
+    expect(note).toHaveTextContent("70.0%");
+    expect(note).toHaveTextContent("leans real");
+  });
+
   it("shows a friendly error when the API is unreachable", async () => {
     vi.stubGlobal(
       "fetch",
@@ -142,6 +174,9 @@ describe("<Analyzer />", () => {
           analysis({
             mode: "demo",
             model: null,
+            label: "uncertain",
+            top_label: "real",
+            uncertainty_threshold: null,
             confidence: 0.5,
             probabilities: { fake: 0.5, real: 0.5 },
             disclaimer: "DEMO ONLY: not produced by the model.",
