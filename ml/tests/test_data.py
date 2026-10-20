@@ -10,6 +10,7 @@ from fakenews_ml.data import (
     load_data_dir,
     load_labeled_csv,
 )
+from fakenews_ml.leakage import MARKERS
 from tests.conftest import make_rows, write_csv
 
 
@@ -199,3 +200,59 @@ def test_report_is_json_serializable_and_printable(dataset) -> None:  # type: ig
 
     json.dumps(dataset.report.to_dict(), allow_nan=False)
     assert "Dataset validation report" in dataset.report.format()
+
+
+# -- residual source markers (measured after cleaning) -------------------------------------------
+
+STYLE = "wire style 'said on <weekday>'"
+IMAGE = "'featured image' / 'image via'"
+
+
+def _class_files(tmp_path: Path, fake_suffix: str, real_suffix: str) -> tuple[Path, Path]:
+    fake = [[f"{long(f'fake report number {i}')} {fake_suffix}".strip()] for i in range(80)]
+    real = [[f"{long(f'real report number {i}')} {real_suffix}".strip()] for i in range(80)]
+    return (
+        write_csv(tmp_path / "Fake.csv", ["text"], fake),
+        write_csv(tmp_path / "True.csv", ["text"], real),
+    )
+
+
+def test_markers_are_measured_after_cleaning_so_removed_boilerplate_does_not_count(
+    tmp_path: Path,
+) -> None:
+    # The image credit is removed by preprocessing, so it must NOT show up as a residual marker;
+    # "said on Tuesday" is ordinary text that survives cleaning, so it must.
+    fake, real = _class_files(
+        tmp_path, "Featured image via Mark Wilson/Getty Images", "He said on Tuesday."
+    )
+
+    report = load_class_csvs(fake, real).report
+
+    assert report.classes["fake"].marker_shares[IMAGE] == 0.0
+    assert report.classes["real"].marker_shares[STYLE] == 1.0
+    assert report.classes["fake"].marker_shares[STYLE] == 0.0
+    assert set(report.classes["real"].marker_shares) == set(MARKERS)
+
+
+def test_a_marker_concentrated_in_one_class_triggers_a_warning(tmp_path: Path) -> None:
+    fake, real = _class_files(tmp_path, "", "He said on Tuesday.")
+    report = load_class_csvs(fake, real).report
+
+    matching = [w for w in report.warnings if STYLE in w]
+    assert len(matching) == 1
+    assert "100% of real vs 0% of fake" in matching[0]
+    assert "<-- differs by class" in report.format()
+
+
+def test_balanced_markers_trigger_no_marker_warning(tmp_path: Path) -> None:
+    fake, real = _class_files(tmp_path, "She said on Monday.", "He said on Tuesday.")
+    report = load_class_csvs(fake, real).report
+
+    assert [w for w in report.warnings if "After cleaning" in w] == []
+    assert "<-- differs by class" not in report.format()
+
+
+def test_the_validation_report_lists_every_monitored_marker(dataset) -> None:  # type: ignore[no-untyped-def]
+    text = dataset.report.format()
+    assert "Residual source markers after cleaning" in text
+    assert all(name in text for name in MARKERS)

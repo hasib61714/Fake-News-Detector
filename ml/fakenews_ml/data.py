@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from fakenews_ml.leakage import GAP_WARN, MARKERS, marker_bits
 from fakenews_ml.preprocessing import DATELINE, clean_text
 
 LABELS = ("fake", "real")
@@ -53,7 +54,9 @@ class ClassCounts:
     dropped_label_conflicts: int = 0
     kept: int = 0
     median_chars: float | None = None
-    dateline_share: float | None = None
+    dateline_share: float | None = None  # raw text, before cleaning
+    # Share of kept articles containing each monitored marker AFTER cleaning (see leakage.py).
+    marker_shares: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -81,6 +84,13 @@ class DatasetReport:
                 else f"  [{label}] read {c.rows_read:,} | kept 0"
             )
         lines.append(f"  total kept: {self.total_kept:,}   fingerprint: {self.fingerprint[:16]}…")
+        shares = {label: c.marker_shares for label, c in self.classes.items()}
+        if all(shares.values()):
+            lines.append("  Residual source markers after cleaning (share of articles):")
+            for name in MARKERS:
+                f, r = shares["fake"][name], shares["real"][name]
+                flag = "  <-- differs by class" if abs(f - r) >= GAP_WARN else ""
+                lines.append(f"    {name:<42} fake {f:6.1%}   real {r:6.1%}{flag}")
         lines += [f"  WARNING: {w}" for w in self.warnings]
         return "\n".join(lines)
 
@@ -190,7 +200,7 @@ def _key(cleaned: str) -> bytes:
 def validate_sources(sources: list[_Source]) -> Dataset:
     """Drop unusable rows, count every decision, and raise if the result cannot be trained on."""
     classes = {label: ClassCounts() for label in LABELS}
-    candidates: list[tuple[str, str, bytes, int]] = []  # (raw, label, key, cleaned length)
+    candidates: list[tuple[str, str, bytes, int, int]] = []  # raw, label, key, length, markers
 
     for source in sources:
         for raw, label in source.rows:
@@ -203,19 +213,20 @@ def validate_sources(sources: list[_Source]) -> Dataset:
             if len(cleaned) < MIN_TEXT_CHARS:
                 counts.dropped_too_short += 1
                 continue
-            candidates.append((raw, label, _key(cleaned), len(cleaned)))
+            candidates.append((raw, label, _key(cleaned), len(cleaned), marker_bits(cleaned)))
 
     labels_by_key: dict[bytes, set[str]] = {}
-    for _, label, key, _ in candidates:
+    for _, label, key, _, _ in candidates:
         labels_by_key.setdefault(key, set()).add(label)
 
     texts: list[str] = []
     labels: list[str] = []
     lengths: dict[str, list[int]] = {label: [] for label in LABELS}
     dateline_hits: Counter[str] = Counter()
+    marker_hits: dict[str, list[int]] = {label: [0] * len(MARKERS) for label in LABELS}
     kept_keys: list[str] = []
     seen: set[bytes] = set()
-    for raw, label, key, length in candidates:
+    for raw, label, key, length, bits in candidates:
         if len(labels_by_key[key]) > 1:
             classes[label].dropped_label_conflicts += 1
         elif key in seen:
@@ -226,6 +237,8 @@ def validate_sources(sources: list[_Source]) -> Dataset:
             labels.append(label)
             lengths[label].append(length)
             dateline_hits[label] += bool(DATELINE.match(raw))
+            for i in range(len(MARKERS)):
+                marker_hits[label][i] += (bits >> i) & 1
             kept_keys.append(f"{label}\t{key.hex()}")
 
     for label in LABELS:
@@ -234,6 +247,9 @@ def validate_sources(sources: list[_Source]) -> Dataset:
         if counts.kept:
             counts.median_chars = float(statistics.median(lengths[label]))
             counts.dateline_share = dateline_hits[label] / counts.kept
+            counts.marker_shares = {
+                name: marker_hits[label][i] / counts.kept for i, name in enumerate(MARKERS)
+            }
         if counts.kept < MIN_PER_CLASS:
             raise DatasetError(
                 f"Need at least {MIN_PER_CLASS} usable '{label}' articles after cleaning; "
@@ -277,4 +293,13 @@ def _warnings(classes: dict[str, ClassCounts]) -> list[str]:
                 "start with a wire-service dateline such as '(Reuters)'. Preprocessing strips this "
                 "marker, but check for other publisher-specific artifacts before trusting metrics."
             )
+    if fake.marker_shares and real.marker_shares:
+        for name in MARKERS:
+            f, r = fake.marker_shares[name], real.marker_shares[name]
+            if abs(f - r) >= GAP_WARN:
+                warnings.append(
+                    f"After cleaning, {name} appears in {r:.0%} of real vs {f:.0%} of fake "
+                    "articles. A model can use this to recognize the source rather than the "
+                    "content; treat high scores with suspicion."
+                )
     return warnings
