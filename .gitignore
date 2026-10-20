@@ -1,0 +1,29 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+coverage/
+
+# Environment files (the .example templates are committed)
+.env
+.env.*
+!.env.example
+
+# ML: datasets and trained artifacts are never committed
+ml/data/*
+!ml/data/.gitkeep
+ml/artifacts/*
+!ml/artifacts/.gitkeep
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

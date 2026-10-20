@@ -22,7 +22,26 @@
 
 ---
 
+## Status
+
+This repository is a **monorepo foundation with a working end-to-end MVP**. The target feature set is listed under [Features](#features); this table shows what exists today.
+
+| Area | State |
+|---|---|
+| Web UI (article input, loading/error states, results panel) | Implemented |
+| FastAPI backend (`/api/v1/health`, `/api/v1/analyze`) | Implemented |
+| TF-IDF + Logistic Regression training pipeline (`ml/`) | Implemented — **no dataset or trained model is included** |
+| "Model not trained yet" handling | Implemented |
+| Demo mode (fixed sample output, separate from inference) | Implemented, off by default |
+| NLTK preprocessing, Naive Bayes / SVM / Random Forest comparison, ROC curves, notebooks | Not yet |
+| MySQL + SQLAlchemy + Alembic persistence | Not yet (planned) |
+| Authentication, external fact-checking, admin features | Out of scope for now |
+
+Until you train a model (see [Train a model](#4-train-a-model)), the analyze endpoint answers **503 "Model not trained yet"** and the UI says so. It never guesses.
+
 ## Features
+
+> Target scope. Not every item below is implemented yet; see [Status](#status).
 
 - **Binary Classification** — Instantly labels news articles as Real or Fake with confidence scores
 - **NLP Preprocessing Pipeline** — Tokenization, stop-word removal, stemming, and lemmatization
@@ -38,19 +57,18 @@
 
 <p align="center">
   <a href="https://skillicons.dev">
-    <img src="https://skillicons.dev/icons?i=python,sklearn&theme=dark" />
+    <img src="https://skillicons.dev/icons?i=python,fastapi,sklearn,nextjs,ts,tailwind&theme=dark" />
   </a>
 </p>
 
 | Layer | Technology |
 |---|---|
-| Language | Python 3.10+ |
-| ML Framework | Scikit-learn |
-| NLP | NLTK (tokenization, stemming, lemmatization) |
-| Feature Extraction | TF-IDF Vectorizer |
-| Data Handling | Pandas, NumPy |
-| Visualization | Matplotlib, Seaborn |
-| Algorithms | Naive Bayes, Logistic Regression, SVM, Random Forest |
+| Frontend | Next.js (App Router), React, TypeScript, Tailwind CSS |
+| Backend | Python 3.10+, FastAPI, Pydantic |
+| ML | scikit-learn (TF-IDF + Logistic Regression), joblib |
+| Tests | Pytest (backend + ML), Vitest + Testing Library (frontend) |
+| Quality | Ruff, mypy (strict), ESLint, Prettier, TypeScript `tsc` |
+| Persistence (later) | MySQL, SQLAlchemy, Alembic |
 
 ---
 
@@ -58,38 +76,94 @@
 
 ### Prerequisites
 
-- Python >= 3.10 & pip
-- Jupyter Notebook or JupyterLab (optional, for notebooks)
+- Python >= 3.10 (with `venv`)
+- Node.js >= 20.9 (22 recommended, see `.nvmrc`) and npm
+- `make` (Linux/macOS; on Windows use WSL)
 
-### Installation
+### 1. Install
 
 ```bash
-# Clone the repository
 git clone https://github.com/hasib61714/Fake-News-Detector.git
 cd Fake-News-Detector
-
-# Create and activate a virtual environment
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Download NLTK data
-python -c "import nltk; nltk.download('stopwords'); nltk.download('wordnet')"
+make setup        # creates .venv, installs API + ML packages, runs `npm ci` in apps/web
 ```
 
-### Usage
+Python dependencies are pinned by `constraints.txt`; JavaScript by `apps/web/package-lock.json`.
+
+### 2. Configure environment
 
 ```bash
-# Run training and evaluation
-python src/train.py
+cp services/api/.env.example services/api/.env
+cp apps/web/.env.example apps/web/.env.local
+```
 
-# Predict on a custom article
-python src/predict.py --text "Your news article text here..."
+Both files contain only non-secret defaults that work for local development.
 
-# Or explore via Jupyter Notebook
-jupyter notebook notebooks/
+| Variable | Where | Purpose |
+|---|---|---|
+| `NEXT_PUBLIC_API_BASE_URL` | `apps/web/.env.local` | Backend URL the **browser** calls (default `http://localhost:8000`). Inlined at build time. |
+| `CORS_ORIGINS` | `services/api/.env` | Comma-separated origins allowed to call the API (default `http://localhost:3000`). |
+| `MODEL_PATH` | `services/api/.env` | Location of the trained model artifact (default `ml/artifacts/model.joblib`). |
+| `ENABLE_DEMO_MODE` | `services/api/.env` | Exposes the clearly labeled demo endpoint. Default `false`. |
+| `APP_ENV` | `services/api/.env` | `development` / `production`. |
+
+### 3. Run
+
+```bash
+make dev          # API on http://localhost:8000 and web on http://localhost:3000
+# or in two terminals:
+make api
+make web
+```
+
+Open <http://localhost:3000>. Interactive API docs are at <http://localhost:8000/docs>.
+
+At this point the status pill reads **"model not trained yet"**, and pressing Analyze shows the "Model not trained yet" message. That is expected.
+
+### 4. Train a model
+
+No dataset is bundled. Bring your own labeled CSV (details and caveats in [`ml/README.md`](ml/README.md)):
+
+```bash
+# One CSV with `text` and `label` (fake|real) columns
+make train DATA=path/to/articles.csv
+
+# Or two CSVs, one per class (e.g. the Kaggle "Fake and Real News" Fake.csv / True.csv)
+make train FAKE=path/to/Fake.csv REAL=path/to/True.csv
+```
+
+This writes `ml/artifacts/model.joblib` and `ml/artifacts/model.metadata.json` (both git-ignored). A running API picks the new model up on the next request; no restart is needed.
+
+### Demo mode (optional)
+
+Set `ENABLE_DEMO_MODE=true` in `services/api/.env` and restart the API. The UI then shows a **Preview demo result** button that calls `POST /api/v1/demo/analyze`. It returns a fixed, clearly labeled sample payload for previewing the interface. It lives in its own module (`services/api/app/demo/`), never loads or calls the model, and does not affect `/api/v1/analyze`.
+
+### Quality checks
+
+```bash
+make check        # lint + type checks + all tests + production web build
+```
+
+Individual targets: `make lint`, `make typecheck`, `make test`, `make test-api`, `make test-ml`, `make test-web`, `make format`. Run `make help` for the full list. The same checks run in CI (`.github/workflows/ci.yml`).
+
+---
+
+## API
+
+Base path: `/api/v1`. Errors share one shape: `{"error": {"code": "...", "message": "...", "fields": [...]}}`.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Always `200` while the service is up. `model.status` is `ready`, `not_trained` or `error`. |
+| `POST` | `/analyze` | Body `{"text": "<article>"}` (50 to 20,000 characters after trimming). Returns `label` (`fake`/`real`), `confidence`, `probabilities`, model info and a disclaimer. |
+| `POST` | `/demo/analyze` | Only mounted when `ENABLE_DEMO_MODE=true`. Fixed sample response with `mode: "demo"`. |
+
+`POST /analyze` status codes: `200` success, `422` `invalid_request`, `503` `model_not_trained` ("Model not trained yet…") or `model_load_failed`.
+
+```bash
+curl -s -X POST http://localhost:8000/api/v1/analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "Paste an article of at least fifty characters here to analyze it."}'
 ```
 
 ---
@@ -98,16 +172,22 @@ jupyter notebook notebooks/
 
 ```
 Fake-News-Detector/
-├── data/
-│   ├── True.csv
-│   └── Fake.csv
-├── notebooks/
-│   └── exploration.ipynb
-├── src/
-│   ├── preprocess.py
-│   ├── train.py
-│   └── predict.py
-└── requirements.txt
+├── apps/web/                  # Next.js (App Router) + TypeScript + Tailwind
+│   ├── src/app/               #   layout, page, global styles
+│   ├── src/components/        #   Analyzer (form + state), ResultPanel, ApiStatus
+│   └── src/lib/               #   API client, env config, input validation (+ tests)
+├── services/api/              # FastAPI backend
+│   ├── app/api/routes/        #   health, analyze, demo (demo is separate from inference)
+│   ├── app/inference/         #   ModelService: explicit load + predict interface
+│   ├── app/schemas.py         #   typed request/response models
+│   └── tests/                 #   pytest
+├── ml/                        # Training code (scikit-learn); datasets/artifacts are git-ignored
+│   ├── fakenews_ml/           #   data loading, pipeline, training CLI
+│   └── tests/
+├── .github/workflows/ci.yml   # lint, type check, test, build
+├── constraints.txt            # pinned Python dependency versions
+├── Makefile                   # setup / run / train / check workflow
+└── README.md
 ```
 
 ---
