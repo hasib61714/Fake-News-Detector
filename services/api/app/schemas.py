@@ -7,6 +7,7 @@ MIN_ARTICLE_CHARS = 50
 MAX_ARTICLE_CHARS = 20_000
 
 Label = Literal["fake", "real"]
+Verdict = Literal["fake", "real", "uncertain"]
 ModelStatus = Literal["ready", "not_trained", "error"]
 ErrorCode = Literal[
     "invalid_request",
@@ -42,9 +43,18 @@ class AnalyzeResponse(BaseModel):
     mode: Literal["model", "demo"] = Field(
         description="'model' for real inference; 'demo' for the fixed sample payload."
     )
-    label: Label
-    confidence: float = Field(ge=0, le=1, description="Probability of the predicted label.")
+    label: Verdict = Field(
+        description="'fake' or 'real', or 'uncertain' when confidence is below the model's "
+        "validation-derived threshold."
+    )
+    top_label: Label = Field(
+        description="The class the model scored highest, even when the verdict is 'uncertain'."
+    )
+    confidence: float = Field(ge=0, le=1, description="Probability of top_label.")
     probabilities: Probabilities
+    uncertainty_threshold: float | None = Field(
+        description="Confidence below which the verdict is 'uncertain'. Null in demo mode."
+    )
     model: ModelInfo | None = Field(
         description="Model that produced the result. Null in demo mode."
     )

@@ -10,6 +10,9 @@ dependencies = [
     "pydantic-settings>=2.4",
     "scikit-learn>=1.5",
     "joblib>=1.4",
+    # Local package (see ml/). The saved pipeline embeds its preprocessing step, so the API needs
+    # the same code to load it; `make setup-py` installs both in one environment.
+    "fakenews-ml>=0.2",
 ]
 
 [project.optional-dependencies]
@@ -42,6 +45,8 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 [tool.mypy]
 python_version = "3.10"
 strict = true
+# The editable install of fakenews-ml is not visible to mypy; point it at the source instead.
+mypy_path = "../../ml"
 files = ["app", "tests"]
 
 [[tool.mypy.overrides]]

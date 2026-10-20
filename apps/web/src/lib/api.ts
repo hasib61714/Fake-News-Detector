@@ -2,6 +2,8 @@ import { getApiBaseUrl } from "@/lib/config";
 
 // Types mirror services/api/app/schemas.py.
 export type Label = "fake" | "real";
+/** `uncertain`: confidence fell below the model's validation-derived threshold. */
+export type Verdict = Label | "uncertain";
 
 export interface ModelInfo {
   name: string;
@@ -11,9 +13,12 @@ export interface ModelInfo {
 
 export interface AnalyzeResponse {
   mode: "model" | "demo";
-  label: Label;
+  label: Verdict;
+  /** The class scored highest, even when `label` is "uncertain". */
+  top_label: Label;
   confidence: number;
   probabilities: { fake: number; real: number };
+  uncertainty_threshold: number | null;
   model: ModelInfo | null;
   analyzed_chars: number;
   disclaimer: string;

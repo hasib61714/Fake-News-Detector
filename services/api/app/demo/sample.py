@@ -10,9 +10,11 @@ def build_demo_response(analyzed_chars: int) -> AnalyzeResponse:
     """Return an obviously fake, constant response. The input text is never classified."""
     return AnalyzeResponse(
         mode="demo",
-        label="real",
+        label="uncertain",
+        top_label="real",
         confidence=0.5,
         probabilities=Probabilities(fake=0.5, real=0.5),
+        uncertainty_threshold=None,
         model=None,
         analyzed_chars=analyzed_chars,
         disclaimer=DEMO_DISCLAIMER,

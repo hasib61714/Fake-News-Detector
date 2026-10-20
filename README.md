@@ -30,14 +30,14 @@ This repository is a **monorepo foundation with a working end-to-end MVP**. The 
 |---|---|
 | Web UI (article input, loading/error states, results panel) | Implemented |
 | FastAPI backend (`/api/v1/health`, `/api/v1/analyze`) | Implemented |
-| TF-IDF + Logistic Regression training pipeline (`ml/`) | Implemented — **no dataset or trained model is included** |
+| Dataset validation for `Fake.csv` / `True.csv`, TF-IDF + Logistic Regression vs Linear SVM comparison (training-only cross-validation), isolated test evaluation, validation-derived "uncertain" rule, versioned artifact (`ml/`) | Implemented — **no dataset or trained model is included, and no metrics have been produced yet** |
 | "Model not trained yet" handling | Implemented |
 | Demo mode (fixed sample output, separate from inference) | Implemented, off by default |
-| NLTK preprocessing, Naive Bayes / SVM / Random Forest comparison, ROC curves, notebooks | Not yet |
+| NLTK preprocessing, Naive Bayes / Random Forest, hyperparameter tuning, ROC curves, notebooks | Not yet |
 | MySQL + SQLAlchemy + Alembic persistence | Not yet (planned) |
 | Authentication, external fact-checking, admin features | Out of scope for now |
 
-Until you train a model (see [Train a model](#4-train-a-model)), the analyze endpoint answers **503 "Model not trained yet"** and the UI says so. It never guesses.
+Until you train a model (see [Train a model](#4-train-a-model)), the analyze endpoint answers **503 "Model not trained yet"** and the UI says so. It never guesses. The real-dataset training run and evaluation are still to be done by you; see [`ml/README.md`](ml/README.md).
 
 ## Features
 
@@ -65,7 +65,7 @@ Until you train a model (see [Train a model](#4-train-a-model)), the analyze end
 |---|---|
 | Frontend | Next.js (App Router), React, TypeScript, Tailwind CSS |
 | Backend | Python 3.10+, FastAPI, Pydantic |
-| ML | scikit-learn (TF-IDF + Logistic Regression), joblib |
+| ML | scikit-learn (TF-IDF with Logistic Regression and Linear SVM), joblib |
 | Tests | Pytest (backend + ML), Vitest + Testing Library (frontend) |
 | Quality | Ruff, mypy (strict), ESLint, Prettier, TypeScript `tsc` |
 | Persistence (later) | MySQL, SQLAlchemy, Alembic |
@@ -103,7 +103,7 @@ Both files contain only non-secret defaults that work for local development.
 |---|---|---|
 | `NEXT_PUBLIC_API_BASE_URL` | `apps/web/.env.local` | Backend URL the **browser** calls (default `http://localhost:8000`). Inlined at build time. |
 | `CORS_ORIGINS` | `services/api/.env` | Comma-separated origins allowed to call the API (default `http://localhost:3000`). |
-| `MODEL_PATH` | `services/api/.env` | Location of the trained model artifact (default `ml/artifacts/model.joblib`). |
+| `MODEL_PATH` | `services/api/.env` | Location of the active model artifact (default `ml/artifacts/model.joblib`; its `model.metadata.json` must sit next to it). |
 | `ENABLE_DEMO_MODE` | `services/api/.env` | Exposes the clearly labeled demo endpoint. Default `false`. |
 | `APP_ENV` | `services/api/.env` | `development` / `production`. |
 
@@ -122,17 +122,19 @@ At this point the status pill reads **"model not trained yet"**, and pressing An
 
 ### 4. Train a model
 
-No dataset is bundled. Bring your own labeled CSV (details and caveats in [`ml/README.md`](ml/README.md)):
+No dataset is bundled. Download `Fake.csv` and `True.csv` yourself (for example the Kaggle "Fake and Real News Dataset"; check its license) and place them in `ml/data/`. Full instructions, the validation rules and the training procedure are in [`ml/README.md`](ml/README.md).
 
 ```bash
-# One CSV with `text` and `label` (fake|real) columns
-make train DATA=path/to/articles.csv
-
-# Or two CSVs, one per class (e.g. the Kaggle "Fake and Real News" Fake.csv / True.csv)
-make train FAKE=path/to/Fake.csv REAL=path/to/True.csv
+make validate-data     # check ml/data/Fake.csv and ml/data/True.csv, print the validation report
+make train             # validate, compare models, derive the uncertainty rule, evaluate, save
+make report            # re-print the recorded evaluation of the active model
 ```
 
-This writes `ml/artifacts/model.joblib` and `ml/artifacts/model.metadata.json` (both git-ignored). A running API picks the new model up on the next request; no restart is needed.
+Training splits the data into train / validation / test. Logistic Regression and Linear SVM are compared with cross-validation on the training split only, the "uncertain" confidence threshold is derived on the validation split, and the test split is scored once at the end. The printed report and `ml/artifacts/model.metadata.json` contain precision, recall, F1, the confusion matrix and the classification report. Both are git-ignored.
+
+The artifact is versioned under `ml/artifacts/releases/<version>/` and copied to `ml/artifacts/model.joblib` (the file the API loads). It contains the preprocessing and the model together; the API verifies its checksum and preprocessing version when loading. A running API reloads the model automatically when the files change, so no restart is needed.
+
+Other input forms: `make train FAKE=path/Fake.csv REAL=path/True.csv`, `make train DATA=path/articles.csv` (columns `text`, `label`).
 
 ### Demo mode (optional)
 
@@ -155,10 +157,10 @@ Base path: `/api/v1`. Errors share one shape: `{"error": {"code": "...", "messag
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Always `200` while the service is up. `model.status` is `ready`, `not_trained` or `error`. |
-| `POST` | `/analyze` | Body `{"text": "<article>"}` (50 to 20,000 characters after trimming). Returns `label` (`fake`/`real`), `confidence`, `probabilities`, model info and a disclaimer. |
+| `POST` | `/analyze` | Body `{"text": "<article>"}` (50 to 20,000 characters after trimming). Returns `label` (`fake`, `real`, or `uncertain` when confidence is below the model's validation-derived threshold), `top_label` (the higher-scoring class even when uncertain), `confidence`, `probabilities`, `uncertainty_threshold`, model name/version and a disclaimer. |
 | `POST` | `/demo/analyze` | Only mounted when `ENABLE_DEMO_MODE=true`. Fixed sample response with `mode: "demo"`. |
 
-`POST /analyze` status codes: `200` success, `422` `invalid_request`, `503` `model_not_trained` ("Model not trained yet…") or `model_load_failed`.
+`POST /analyze` status codes: `200` success, `422` `invalid_request`, `503` `model_not_trained` ("Model not trained yet…") or `model_load_failed` (artifact missing its metadata, checksum or preprocessing-version mismatch, unreadable file; the API refuses it rather than guessing).
 
 ```bash
 curl -s -X POST http://localhost:8000/api/v1/analyze \
@@ -178,11 +180,13 @@ Fake-News-Detector/
 │   └── src/lib/               #   API client, env config, input validation (+ tests)
 ├── services/api/              # FastAPI backend
 │   ├── app/api/routes/        #   health, analyze, demo (demo is separate from inference)
-│   ├── app/inference/         #   ModelService: explicit load + predict interface
+│   ├── app/inference/         #   ModelService: verified load + predict, uncertain handling
 │   ├── app/schemas.py         #   typed request/response models
 │   └── tests/                 #   pytest
 ├── ml/                        # Training code (scikit-learn); datasets/artifacts are git-ignored
-│   ├── fakenews_ml/           #   data loading, pipeline, training CLI
+│   ├── fakenews_ml/           #   data validation, preprocessing, models, selection, uncertainty,
+│   │                          #   evaluation, artifacts, training CLI
+│   ├── data/                  #   put Fake.csv and True.csv here (git-ignored)
 │   └── tests/
 ├── .github/workflows/ci.yml   # lint, type check, test, build
 ├── constraints.txt            # pinned Python dependency versions

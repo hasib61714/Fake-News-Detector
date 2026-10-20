@@ -13,7 +13,7 @@ DISCLAIMER = (
 
 @router.post(
     "/analyze",
-    summary="Classify an article as fake or real with the trained model",
+    summary="Classify an article as fake, real or uncertain with the trained model",
     responses={
         422: {"model": ErrorResponse, "description": "Invalid request body."},
         503: {
@@ -27,8 +27,10 @@ def analyze(payload: AnalyzeRequest, model_service: ModelServiceDep) -> AnalyzeR
     return AnalyzeResponse(
         mode="model",
         label=prediction.label,
+        top_label=prediction.top_label,
         confidence=prediction.confidence,
         probabilities=prediction.probabilities,
+        uncertainty_threshold=prediction.uncertainty_threshold,
         model=prediction.model,
         analyzed_chars=len(payload.text),
         disclaimer=DISCLAIMER,

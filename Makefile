@@ -10,7 +10,7 @@ WEB_DIR := apps/web
 ML_DIR  := ml
 
 .DEFAULT_GOAL := help
-.PHONY: help setup setup-py setup-web api web dev train test test-api test-ml test-web \
+.PHONY: help setup setup-py setup-web api web dev validate-data train report test test-api test-ml test-web \
         lint lint-py lint-web typecheck typecheck-py typecheck-web format check clean
 
 help: ## Show this help
@@ -39,15 +39,20 @@ web: ## Run the Next.js frontend on http://localhost:3000
 dev: ## Run backend and frontend together (Ctrl+C stops both)
 	$(MAKE) -j2 api web
 
-train: ## Train the model: make train DATA=path/to/data.csv  (or FAKE=... REAL=...)
+validate-data: ## Validate Fake.csv + True.csv (default: ml/data); DATA_DIR=... to override
+	$(PYTHON) -m fakenews_ml.validate --data-dir "$(or $(DATA_DIR),$(ML_DIR)/data)"
+
+train: ## Train + compare + evaluate; writes a versioned model (see ml/README.md)
 ifdef DATA
 	$(PYTHON) -m fakenews_ml.train --data "$(DATA)"
 else ifdef FAKE
 	$(PYTHON) -m fakenews_ml.train --fake-csv "$(FAKE)" --real-csv "$(REAL)"
 else
-	@echo "Usage: make train DATA=path/to/data.csv   or   make train FAKE=Fake.csv REAL=True.csv"; \
-	echo "See ml/README.md for the expected dataset format."; exit 2
+	$(PYTHON) -m fakenews_ml.train --data-dir "$(or $(DATA_DIR),$(ML_DIR)/data)"
 endif
+
+report: ## Print the evaluation recorded in the active model's metadata
+	$(PYTHON) -m fakenews_ml.report
 
 # -- quality -----------------------------------------------------------------
 

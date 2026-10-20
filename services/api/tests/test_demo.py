@@ -25,6 +25,7 @@ def test_demo_is_labeled_and_never_touches_the_model(
     body = demo.json()
     assert body["mode"] == "demo"
     assert body["model"] is None
+    assert body["uncertainty_threshold"] is None
     assert "NOT produced by the machine-learning model" in body["disclaimer"]
     assert health["demo_mode_enabled"] is True
     # Demo mode does not make the real endpoint pretend a model exists.

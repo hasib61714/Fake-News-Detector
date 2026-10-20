@@ -28,8 +28,9 @@ def test_health_with_model(
 
     assert body["model"]["status"] == "ready"
     assert body["model"]["loaded"] is True
-    assert body["model"]["info"]["name"] == "toy-test-model"
-    assert body["model"]["info"]["version"] == "t1"
+    info = body["model"]["info"]
+    assert info["name"] in {"tfidf-logistic-regression", "tfidf-linear-svm-calibrated"}
+    assert info["version"] and info["trained_at"]
 
 
 def test_cors_allows_configured_origin(make_client: Callable[..., TestClient]) -> None:

@@ -70,14 +70,31 @@ function Failure({ error }: { error: ApiError }) {
 
 function Success({ result }: { result: AnalyzeResponse }) {
   const isDemo = result.mode === "demo";
+  const isUncertain = !isDemo && result.label === "uncertain";
   const isFake = result.label === "fake";
 
-  const badge = isDemo
-    ? "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200"
-    : isFake
-      ? "bg-rose-100 text-rose-900 dark:bg-rose-950 dark:text-rose-200"
-      : "bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200";
-  const bar = isDemo ? "bg-slate-400" : isFake ? "bg-rose-500" : "bg-emerald-500";
+  const badge =
+    isDemo || isUncertain
+      ? isUncertain
+        ? "bg-amber-100 text-amber-950 dark:bg-amber-950 dark:text-amber-100"
+        : "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200"
+      : isFake
+        ? "bg-rose-100 text-rose-900 dark:bg-rose-950 dark:text-rose-200"
+        : "bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200";
+  const bar = isDemo
+    ? "bg-slate-400"
+    : isUncertain
+      ? "bg-amber-500"
+      : isFake
+        ? "bg-rose-500"
+        : "bg-emerald-500";
+  const verdict = isDemo
+    ? "No real verdict"
+    : isUncertain
+      ? "Uncertain"
+      : isFake
+        ? "Likely fake"
+        : "Likely real";
 
   return (
     <div className="space-y-5">
@@ -95,13 +112,28 @@ function Success({ result }: { result: AnalyzeResponse }) {
           {isDemo ? "Sample output" : "The classifier thinks this article looks"}
         </p>
         <p className={`mt-1 inline-block rounded-lg px-3 py-1.5 text-2xl font-semibold ${badge}`}>
-          {isDemo ? "No real verdict" : isFake ? "Likely fake" : "Likely real"}
+          {verdict}
         </p>
       </div>
 
+      {isUncertain && (
+        <p
+          role="note"
+          className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100"
+        >
+          The model is not confident enough to call this article fake or real. Its confidence (
+          {percent(result.confidence)}) is below the threshold of{" "}
+          {result.uncertainty_threshold !== null ? percent(result.uncertainty_threshold) : "n/a"}{" "}
+          chosen on held-out validation data. It leans <strong>{result.top_label}</strong>, but
+          treat that as weak.
+        </p>
+      )}
+
       <div>
         <div className="flex items-baseline justify-between text-sm">
-          <span className="font-medium">{isDemo ? "Sample confidence" : "Confidence"}</span>
+          <span className="font-medium">
+            {isDemo ? "Sample confidence" : `Confidence (${result.top_label})`}
+          </span>
           <span className="tabular-nums">{percent(result.confidence)}</span>
         </div>
         <div
