@@ -122,7 +122,7 @@ At this point the status pill reads **"model not trained yet"**, and pressing An
 
 ### 4. Train a model
 
-No dataset is bundled. Download `Fake.csv` and `True.csv` yourself (for example the Kaggle "Fake and Real News Dataset"; check its license) and place them in `ml/data/`. Full instructions, the validation rules and the training procedure are in [`ml/README.md`](ml/README.md).
+No dataset is bundled. Download `Fake.csv` and `True.csv` yourself (the Kaggle "Fake and Real News Dataset", CC BY-NC-SA 4.0 per its page: non-commercial, share-alike, attribution required; see [`ml/data/PROVENANCE.md`](ml/data/PROVENANCE.md)) and place them in `ml/data/`. Full instructions, the validation rules and the training procedure are in [`ml/README.md`](ml/README.md).
 
 ```bash
 make validate-data     # check ml/data/Fake.csv and ml/data/True.csv, print the validation report
@@ -210,7 +210,7 @@ Contributions are welcome! Please follow these steps:
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project's **code** is licensed under the [MIT License](LICENSE). The MIT license does not cover datasets or models trained on them: the Kaggle ISOT dataset is CC BY-NC-SA 4.0 (non-commercial). See [`ml/data/PROVENANCE.md`](ml/data/PROVENANCE.md).
 
 ---
 

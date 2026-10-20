@@ -16,8 +16,12 @@ the file: everything in `Fake.csv` is `fake`, everything in `True.csv` is `real`
 
 A common public choice is the Kaggle "Fake and Real News Dataset" (ISOT), which ships in exactly
 this layout: <https://www.kaggle.com/datasets/clmentbisaillon/fake-and-real-news-dataset>.
-**Check the dataset's license and terms on its page before using it**; this repository does not
-redistribute it and makes no claim about its license.
+
+**License: CC BY-NC-SA 4.0 (non-commercial, share-alike, attribution required), as stated by the
+project owner from the Kaggle page. It was not independently verified by this repository's tooling.**
+Do not use the data, or models trained on it, commercially. Source, license conditions, attribution
+and citation, and the SHA-256 of the exact files used are recorded in
+[`data/PROVENANCE.md`](data/PROVENANCE.md). This repository does not redistribute the dataset.
 
 ```bash
 # Option A: download in the browser, unzip, and place the two files:
@@ -35,7 +39,7 @@ ml/data/Fake.csv
 ml/data/True.csv
 ```
 
-`ml/data/` is git-ignored. Never commit datasets or trained models.
+`ml/data/` is git-ignored (only `PROVENANCE.md` is tracked). Never commit datasets or trained models.
 
 Any other dataset works if you convert it to this layout, or pass one CSV with `text` and `label`
 (`fake` | `real`) columns via `--data`. Numeric labels are rejected on purpose: 0/1 conventions
@@ -58,7 +62,8 @@ Validation is also the first step of every training run. It checks:
 | Duplicates within a class (ignoring case, HTML, URLs and a wire dateline) | first copy kept, rest dropped and counted |
 | The same article present in **both** files | removed from both and counted (label conflict) |
 | Fewer than 50 usable articles in a class | fatal error |
-| Strong class imbalance, tiny dataset, or a wire-service marker (`(Reuters)`) concentrated in one class | warning |
+| Strong class imbalance, tiny dataset, or a wire-service dateline concentrated in one class | warning |
+| Any monitored source marker (see "Remaining leakage") whose share differs by 20 percentage points or more between classes **after cleaning** | warning, plus a per-class table in the report |
 
 The report lists every count per class, the SHA-256 of each source file, and a **dataset
 fingerprint** (a hash of the cleaned, deduplicated content, independent of row order). All of it is
@@ -163,13 +168,85 @@ validation and test evaluations.
 A scikit-learn version different from the training one is logged as a warning, not an error;
 `constraints.txt` pins the tested versions.
 
-### Preprocessing
+### Preprocessing (version 2)
 
-`fakenews_ml/preprocessing.py`: unescape HTML entities, NFKC-normalize, strip HTML tags, URLs and
-e-mail addresses, remove a leading ALL-CAPS wire dateline such as `WASHINGTON (Reuters) -`, collapse
-whitespace. Lowercasing, English stop words, 1-2-grams and TF-IDF weighting happen in the
-vectorizer. The dateline rule exists because some public datasets contain that marker almost only
-in real articles, which would teach the model to recognize a publisher instead of content.
+`fakenews_ml/preprocessing.py` is the **only** cleaning code. It is the first step of the saved
+pipeline, so training, evaluation and the API run exactly the same function, and dataset
+validation de-duplicates with it too. The artifact records `PREPROCESSING_VERSION` (currently
+`"2"`) and the loader refuses any artifact with another version, so a model trained with
+preprocessing v1 will not be served. Changing the output of any rule means bumping the version and
+retraining.
+
+Generic cleaning: unescape HTML entities, NFKC-normalize, strip HTML tags, URLs and e-mail
+addresses, collapse whitespace. Lowercasing, English stop words, 1-2-grams and TF-IDF weighting
+happen in the vectorizer.
+
+Boilerplate removal (v2). Every rule is anchored to a specific form (start of text, end of text,
+or an exact template) and none deletes a bare word:
+
+| Rule | Removes | Anchoring |
+|---|---|---|
+| `wire_dateline` | `WASHINGTON (Reuters) -`, `XIAMEN, China (Reuters) -`, `NEW YORK/LONDON (Reuters) -`, `(AP) -` | start of text; place must start with an ALL-CAPS word |
+| `wire_tag` | a stray `(Reuters) -` tag elsewhere (not `(AP)` / `(AFP)`, which are ordinary abbreviations) | the exact tag |
+| `credit_line` | `(Reporting by Jane Doe; Editing by John Roe)` | parenthetical starting with a credit verb and a capitalized name |
+| `sponsor_footer` | Reuters' two fixed "funded in part by SAP ... independently created by the Reuters editorial staff" footers | exact templates |
+| `bare_link` | `pic.twitter.com/..`, `twitter.com/..`, `t.co/..`, `bit.ly/..` and similar links without `http` | domain followed by a path |
+| `tweet_attribution` | `(@handle) March 4, 2017` after an embedded tweet (the display name and tweet text stay) | handle in parentheses followed by a full date |
+| `image_credit` | trailing `Featured image via Mark Wilson/Getty Images`, `Photo by ...`, `Image via Twitter`, `Featured Image Credit: ...` | last credit in the final 160 characters; only the final credit is removed |
+| `wire21_lead` / `wire21_footer` / `wire21_support` | `21st Century Wire says`, `READ MORE ... NEWS AT: 21st Century Wire ... Files`, `SUPPORT 21WIRE SUBSCRIBE ...` | start of text / the exact footer / final 160 characters |
+
+Deliberately **kept**, because they are ordinary content: the word "Reuters" in sentences ("a letter
+seen by Reuters", "Reuters/Ipsos poll"), `Getty Images` and `featured image` in running prose,
+plain `(@handle)` mentions, `(AP)` / `(AFP)` abbreviations, dates, and "Reporting by ..." in prose.
+Unit tests (`tests/test_preprocessing.py`) cover each rule, realistic article text that must come
+out unchanged, idempotence, and that the saved pipeline equals "clean, then predict".
+
+The rules were designed by inspecting the full dataset (including rows that later fall into the
+test split) for publisher boilerplate. They are fixed, hand-written patterns and nothing is fitted
+to labels, but you should know that this inspection happened. Measured effect on the dataset used
+here (17,292 fake / 21,189 real articles after validation): the rules remove 2.2% of fake and
+1.0% of real characters, the longest single deletion is 304 characters (a credit line), and
+an audit of the most common and the three longest deleted spans of every rule found only
+boilerplate (it did not read all ~60,000 deletions).
+
+### Remaining leakage
+
+The two classes come from different publishers, so cleaning cannot make them statistically
+identical. `make validate-data` measures these markers per class **after** cleaning (shares of
+articles) and warns when they differ by 20 points or more. For the Kaggle ISOT files with
+preprocessing v2:
+
+| Marker (after cleaning) | Fake | Real | Before v2 (fake / real) |
+|---|---|---|---|
+| mentions "Reuters" | 1.2% | **22.2%** | 1.3% / 28.0% |
+| wire style "said on <weekday>" | 0.7% | **36.7%** | 0.7% / 36.7% |
+| `featured image` / `image via` | 1.7% | 0.0% | at least 46.4% / 0.0% |
+| `Getty Images` | 0.5% | 0.0% | 22.8% / 0.0% |
+| tweet embeds (`pic.twitter`, `(@handle) date`) | 0.0% | 0.0% | at least 25% / 0.0% |
+| 21st Century Wire / 21WIRE | 3.0% | 0.0% | 3.6% / 0.0% (mentions only) |
+| "Read more" | 7.2% | 0.0% | 9.8% / 0.0% |
+| `(Reuters)` tag | 0.0% | 0.0% | 0.0% / 7.6% |
+
+What is still likely to help a model recognize the source rather than the content:
+
+* **The word "Reuters" and wire-agency writing style** (real articles: "said on Monday",
+  attribution phrasing, inverted-pyramid structure). These are ordinary content and are not
+  removed, so a model can still partly separate the classes by style and by naming the agency.
+* **Topic and `subject` differences.** Fake articles skew toward US politics commentary and
+  opinion; real ones toward politics and world news. The `subject` column separates the classes
+  perfectly and is never used, but topic words carry a similar signal.
+* **Residual image and footer variants** that the anchored rules do not match (for example a
+  lowercase `image via ...` after a colon, or credits longer than 160 characters): about 1.7% of
+  fake articles; and "Read more" links (7.2% of fake).
+* **Duplicated fake content.** About 23% of `Fake.csv` rows are duplicates. They are removed before
+  splitting, so copies cannot sit on both sides of the split, but the remaining fake articles
+  still come from a small number of sites.
+* **Time and source coverage.** All articles are from 2015 to 2018 and from a handful of
+  publishers, so scores say little about other years, outlets or topics.
+
+Recommended after training (not done yet): inspect the largest-weight features of the model for
+publisher words, and evaluate on a differently sourced dataset before drawing any conclusion about
+real-world performance.
 
 ## Honest caveats
 
@@ -178,8 +255,10 @@ in real articles, which would teach the model to recognize a publisher instead o
   dataset can still fail on articles from other sources, topics or years. Inspect your data and
   your errors.
 * The classifier learns writing patterns, not facts. It is not a fact-checker.
-* Duplicate and dateline handling reduces known leakage but cannot remove every publisher-specific
-  artifact (for example, `subject` columns and boilerplate phrases).
+* Preprocessing removes known boilerplate, but publisher and style signals remain (see "Remaining
+  leakage"). Treat any metric on this dataset as optimistic.
+* The dataset is licensed CC BY-NC-SA 4.0 (per the owner; see `data/PROVENANCE.md`): research use
+  only, no commercial use, and trained models should be treated as subject to the same terms.
 * Hyperparameters are not tuned and only two model families are compared.
 * The validation set sets the uncertainty threshold; with a small validation split that threshold
   is noisy (the report warns on small datasets).

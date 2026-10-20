@@ -20,6 +20,7 @@ coverage/
 # ML: datasets and trained artifacts are never committed
 ml/data/*
 !ml/data/.gitkeep
+!ml/data/PROVENANCE.md
 ml/artifacts/*
 !ml/artifacts/.gitkeep
 
